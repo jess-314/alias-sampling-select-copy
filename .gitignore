@@ -1,0 +1,27 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local environments
+venv/
+.venv/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Generated circuit artifacts
+output/
+*.qasm
+*.png
+*.svg
+*.log
+
+# OS/editor clutter
+.DS_Store
+*.swp
+*.swo
