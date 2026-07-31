@@ -1,8 +1,9 @@
+import argparse
 import os
 from datetime import datetime
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import numpy as np
@@ -23,10 +24,42 @@ from full_alias_sampler_scaling import (
     choose_alias_sampler_widths,
     format_range,
     make_alias_sampler_tables,
-    make_run_output_dir,
     run_stamp,
 )
 from selectcopy import loglog_slope
+
+
+def _parse_csv_ints(text):
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Estimate logical and physical resource scaling for alias sampling."
+    )
+    parser.add_argument(
+        "--num-entries-list",
+        default="4,8,16,32,64,128,256,512",
+        help="Comma-separated database sizes to sweep.",
+    )
+    parser.add_argument(
+        "--keep-bits-list",
+        default="1,2,3,4,5",
+        help="Comma-separated keep-bit widths to sweep.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=123,
+        help="Seed for the deterministic sample tables.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("output") / "alias_sampler",
+        help="Root directory for notes and plots.",
+    )
+    return parser
 
 
 def make_logical_summary(circuit, gate_metrics):
@@ -470,15 +503,17 @@ def write_model_note(out_dir, rows):
 
 
 if __name__ == "__main__":
-    num_entries_list = [4, 8, 16, 32, 64, 128, 256, 512]
-    keep_bits_list = [1, 2, 3, 4, 5]
+    args = build_arg_parser().parse_args()
+    num_entries_list = _parse_csv_ints(args.num_entries_list)
+    keep_bits_list = _parse_csv_ints(args.keep_bits_list)
     stamp = run_stamp()
-    output_dir = make_run_output_dir(f"{stamp}_physical")
+    output_dir = args.output_root / f"{stamp}_physical"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = sweep_alias_sampler_physical_scaling(
         num_entries_list=num_entries_list,
         keep_bits_list=keep_bits_list,
-        seed=123,
+        seed=args.seed,
     )
 
     print("=== Alias Sampler Physical Scaling Study ===")

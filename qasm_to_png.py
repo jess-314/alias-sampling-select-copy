@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import cirq

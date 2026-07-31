@@ -1,14 +1,43 @@
+import argparse
 import os
 from pathlib import Path
 
 import numpy as np
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 from matplotlib.lines import Line2D
 
 from alias_sampler_cirq import build_alias_sampler_circuit
+
+
+def _parse_csv_ints(text):
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Compare reverse and measurement-based uncompute for alias sampling."
+    )
+    parser.add_argument(
+        "--num-entries-list",
+        default="4,5,8,16,32,64,128,256,512",
+        help="Comma-separated database sizes to sweep.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=123,
+        help="Seed for the deterministic sample tables.",
+    )
+    parser.add_argument(
+        "--output-path",
+        type=Path,
+        default=Path("output") / "figures" / "alias_sampler_uncompute_tradeoff.png",
+        help="Where to write the PNG plot.",
+    )
+    return parser
 
 
 def make_alias_sampler_tables(num_entries, bit_width, seed=0):
@@ -60,7 +89,10 @@ def sweep_uncompute_tradeoffs(num_entries_list, seed=0):
     return rows
 
 
-def plot_uncompute_tradeoffs(rows, out_path="alias_sampler_uncompute_tradeoff.png"):
+def plot_uncompute_tradeoffs(
+    rows,
+    out_path=Path("output") / "figures" / "alias_sampler_uncompute_tradeoff.png",
+):
     """Plot gate-vs-ancilla tradeoffs for the two uncompute paths."""
     try:
         import matplotlib.pyplot as plt
@@ -169,17 +201,20 @@ def plot_uncompute_tradeoffs(rows, out_path="alias_sampler_uncompute_tradeoff.pn
     )
     ax_tradeoff.add_artist(legend1)
     fig.suptitle("Alias Sampler Uncompute Tradeoffs", fontsize=15)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return out_path
 
 
 if __name__ == "__main__":
-    num_entries_list = [4, 5, 8, 16, 32, 64, 128, 256, 512]
+    args = build_arg_parser().parse_args()
+    num_entries_list = _parse_csv_ints(args.num_entries_list)
 
     rows = sweep_uncompute_tradeoffs(
         num_entries_list=num_entries_list,
-        seed=123,
+        seed=args.seed,
     )
 
     print("=== Alias Sampler Uncompute Tradeoff Study ===")
@@ -194,5 +229,8 @@ if __name__ == "__main__":
             f"lambda={row['lambda']:>2}"
         )
 
-    output_path = plot_uncompute_tradeoffs(rows)
+    output_path = plot_uncompute_tradeoffs(
+        rows,
+        out_path=args.output_path,
+    )
     print(f"Plot written to {output_path}")

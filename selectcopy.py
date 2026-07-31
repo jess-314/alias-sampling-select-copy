@@ -1,8 +1,9 @@
+import argparse
 import os
 from datetime import datetime
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import cirq
@@ -539,7 +540,8 @@ def plot_gate_scaling(results, out_path=None):
         ) from exc
 
     if out_path is None:
-        out_path = f"selectcopy_gate_scaling_{run_stamp()}.png"
+        out_path = Path("output") / "selectcopy" / "plots" / f"selectcopy_gate_scaling_{run_stamp()}.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
     sizes = [row["N"] for row in results]
     counts = [row["gate_metrics"]["total_gate_count"] for row in results]
@@ -761,19 +763,67 @@ def pretty_print_select_copy_qrom(
     lines.append(str(circuit))
     return "\n".join(lines)
 
+
+def _parse_csv_ints(text):
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Sweep SelectCopy QROM sizes and export QASM plus plots."
+    )
+    parser.add_argument(
+        "--num-entries-list",
+        default="4,5,8,16,32,64,128,256,512",
+        help="Comma-separated database sizes to sweep.",
+    )
+    parser.add_argument(
+        "--bitsize",
+        type=int,
+        default=4,
+        help="Bit-width of each table entry.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=123,
+        help="Seed for the deterministic sample databases.",
+    )
+    parser.add_argument(
+        "--density",
+        type=float,
+        default=0.5,
+        help="Probability that each sampled bit is 1.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("output") / "selectcopy",
+        help="Root directory for QASM and plot artifacts.",
+    )
+    return parser
+
 # =========================================================================
 # Execution Example
 # =========================================================================
-if __name__ == "__main__":
-    bitsize = 4
-    num_entries_list = [4, 5, 8, 16, 32, 64, 128, 256, 512]
+def main():
+    args = build_arg_parser().parse_args()
+    num_entries_list = _parse_csv_ints(args.num_entries_list)
+    bitsize = args.bitsize
+    seed = args.seed
+    density = args.density
+    output_root = args.output_root
     stamp = run_stamp()
+    qasm_dir = output_root / "qasm"
+    plot_dir = output_root / "plots"
+    qasm_dir.mkdir(parents=True, exist_ok=True)
+    plot_dir.mkdir(parents=True, exist_ok=True)
 
     results = sweep_gate_scaling(
         num_entries_list=num_entries_list,
         bitsize=bitsize,
-        seed=123,
-        density=0.5,
+        seed=seed,
+        density=density,
     )
 
     print("=== SelectCopy QROM Scaling Study ===")
@@ -794,9 +844,8 @@ if __name__ == "__main__":
         )
         print(f"N={row['N']:>3}  lambda={row['lambda']:>2}  " + format_compact_resource_report(metrics))
 
-    output_dir = Path(".")
     for row in results:
-        qasm_path = output_dir / f"qrom_N{row['N']}_b{bitsize}_{stamp}.qasm"
+        qasm_path = qasm_dir / f"qrom_N{row['N']}_b{bitsize}_{stamp}.qasm"
         qasm_circuit = build_exportable_select_copy_qrom(
             row["data"],
             lambda_param=row["lambda"],
@@ -805,6 +854,13 @@ if __name__ == "__main__":
         qasm_str = pretty_format_qasm3(qasm_str)
         qasm_path.write_text(qasm_str, encoding="utf-8")
 
-    plot_path = plot_gate_scaling(results)
-    print(f"\nWrote QASM files for {len(results)} QROM sizes.")
+    plot_path = plot_gate_scaling(
+        results,
+        out_path=plot_dir / f"selectcopy_gate_scaling_{stamp}.png",
+    )
+    print(f"\nWrote QASM files for {len(results)} QROM sizes into {qasm_dir}.")
     print(f"Saved scaling plot to {plot_path}.")
+
+
+if __name__ == "__main__":
+    main()

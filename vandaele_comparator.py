@@ -1,8 +1,36 @@
+import argparse
+import os
 from pathlib import Path
+
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 
 import cirq
 
 from selectcopy import analyze_gate_metrics, format_compact_resource_report
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Build, verify, and export the Vandaele comparator circuit."
+    )
+    parser.add_argument(
+        "--num-bits",
+        type=int,
+        default=5,
+        help="Bit-width of each comparator register.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output") / "comparator",
+        help="Directory for the generated QASM file.",
+    )
+    parser.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Skip the small basis-state verification pass.",
+    )
+    return parser
 
 
 def _majority_step_ops(x_bit, y_bit, carry_bit):
@@ -130,17 +158,23 @@ def verify_small_instances(max_bits=4, cases_per_size=None):
 
 
 if __name__ == "__main__":
-    num_bits = 5
+    args = build_arg_parser().parse_args()
+    num_bits = args.num_bits
     circuit, *_ = build_quantum_quantum_comparator(num_bits)
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=== Vandaele Quantum-Quantum Comparator ===")
     print(f"Bits per register: {num_bits}")
     metrics = analyze_gate_metrics(circuit)
     print(format_compact_resource_report(metrics))
-    verify_small_instances(max_bits=min(4, num_bits))
-    print("Verification: passed on small basis-state instances.")
+    if args.skip_verify:
+        print("Verification: skipped.")
+    else:
+        verify_small_instances(max_bits=min(4, num_bits))
+        print("Verification: passed on small basis-state instances.")
 
-    qasm_path = Path(f"vandaele_comparator_n{num_bits}.qasm")
+    qasm_path = output_dir / f"vandaele_comparator_n{num_bits}.qasm"
     qasm_str = cirq.qasm(circuit, args=cirq.QasmArgs(version="3.0"))
     qasm_path.write_text(qasm_str, encoding="utf-8")
     print(f"QASM written to {qasm_path}")

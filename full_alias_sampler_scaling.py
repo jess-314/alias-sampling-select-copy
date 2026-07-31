@@ -1,9 +1,10 @@
+import argparse
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import cirq
@@ -11,6 +12,39 @@ import numpy as np
 
 from alias_sampler_cirq import build_alias_sampler_circuit
 from selectcopy import format_compact_resource_report, loglog_slope
+
+
+def _parse_csv_ints(text):
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Sweep full alias-sampler resources and export artifacts."
+    )
+    parser.add_argument(
+        "--num-entries-list",
+        default="4,8,16,32,64,128,256,512,1024",
+        help="Comma-separated database sizes to sweep.",
+    )
+    parser.add_argument(
+        "--keep-bits-list",
+        default="1,2,3,4,5",
+        help="Comma-separated keep-bit widths to sweep.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=123,
+        help="Seed for the deterministic sample tables.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("output") / "full_alias_sampler",
+        help="Root directory for logs, plots, and QASM exports.",
+    )
+    return parser
 
 
 def make_alias_sampler_tables(num_entries, keep_bits, seed=0):
@@ -34,9 +68,9 @@ def run_stamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
-def make_run_output_dir(stamp):
+def make_run_output_dir(root, stamp):
     """Create the per-run output directory for full-alias artifacts."""
-    out_dir = Path("output") / "full_alias_sampler" / stamp
+    out_dir = Path(root) / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -178,7 +212,9 @@ def plot_full_alias_sampler_scaling(results, out_path=None):
         raise RuntimeError("matplotlib is required to plot scaling results.") from exc
 
     if out_path is None:
-        out_path = f"full_alias_sampler_scaling_{run_stamp()}.png"
+        stamp = run_stamp()
+        out_path = Path("output") / "full_alias_sampler" / stamp / f"full_alias_sampler_scaling_{stamp}.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
     def plot_positive_log_series(ax, rows, group_key, metric_key, label):
         """Plot only positive points on a log-log axis.
@@ -301,11 +337,11 @@ class Tee:
 
 
 if __name__ == "__main__":
-    # Sweep through 1024 entries to profile the full scaling range.
-    num_entries_list = [4, 8, 16, 32, 64, 128, 256, 512, 1024]
-    keep_bits_list = [1, 2, 3, 4, 5]
+    args = build_arg_parser().parse_args()
+    num_entries_list = _parse_csv_ints(args.num_entries_list)
+    keep_bits_list = _parse_csv_ints(args.keep_bits_list)
     stamp = run_stamp()
-    output_dir = make_run_output_dir(stamp)
+    output_dir = make_run_output_dir(args.output_root, stamp)
     log_path = output_dir / f"full_alias_sampler_scaling_{stamp}.log"
 
     with log_path.open("w", encoding="utf-8") as log_file:

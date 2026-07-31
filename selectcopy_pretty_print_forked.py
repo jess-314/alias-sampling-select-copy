@@ -1,8 +1,9 @@
+import argparse
 import os
 from pathlib import Path
 import textwrap
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
@@ -10,6 +11,49 @@ from matplotlib.patches import FancyBboxPatch
 import numpy as np
 
 from selectcopy import build_select_copy_qrom, summarize_select_copy_layout
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Render a grouped SelectCopy QROM schematic."
+    )
+    parser.add_argument(
+        "--num-entries",
+        type=int,
+        default=16,
+        help="Number of classical table entries to sample.",
+    )
+    parser.add_argument(
+        "--bitsize",
+        type=int,
+        default=4,
+        help="Bit-width of each table entry.",
+    )
+    parser.add_argument(
+        "--lambda-param",
+        type=int,
+        default=4,
+        help="SelectCopy block size parameter.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=20260727,
+        help="Seed for the deterministic sample table.",
+    )
+    parser.add_argument(
+        "--density",
+        type=float,
+        default=0.5,
+        help="Probability that each sampled bit is 1.",
+    )
+    parser.add_argument(
+        "--output-path",
+        type=Path,
+        default=Path("output") / "figures" / "selectcopy_pretty_print_forked.png",
+        help="Where to write the PNG schematic.",
+    )
+    return parser
 
 
 def make_sample_database(num_entries, bitsize, seed=0, density=0.5):
@@ -20,14 +64,15 @@ def make_sample_database(num_entries, bitsize, seed=0, density=0.5):
 
 
 def draw_forked_grouped_selectcopy_schematic(
-    out_path="selectcopy_pretty_print_forked.png",
+    num_entries=16,
+    bitsize=4,
+    lambda_param=4,
+    seed=20260727,
+    density=0.5,
+    out_path=Path("output") / "figures" / "selectcopy_pretty_print_forked.png",
 ):
     """Render a grouped SelectCopy QROM schematic with one block per big step."""
-    num_entries = 16
-    bitsize = 4
-    lambda_param = 4
-
-    data = make_sample_database(num_entries, bitsize, seed=20260727, density=0.5)
+    data = make_sample_database(num_entries, bitsize, seed=seed, density=density)
     circuit = build_select_copy_qrom(
         data,
         lambda_param=lambda_param,
@@ -191,11 +236,21 @@ def draw_forked_grouped_selectcopy_schematic(
     # implemented SelectCopy QROM, even though the image is a grouped schematic.
     _ = circuit
 
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
 
 if __name__ == "__main__":
-    path = draw_forked_grouped_selectcopy_schematic()
+    args = build_arg_parser().parse_args()
+    path = draw_forked_grouped_selectcopy_schematic(
+        num_entries=args.num_entries,
+        bitsize=args.bitsize,
+        lambda_param=args.lambda_param,
+        seed=args.seed,
+        density=args.density,
+        out_path=args.output_path,
+    )
     print(f"Wrote {path}")

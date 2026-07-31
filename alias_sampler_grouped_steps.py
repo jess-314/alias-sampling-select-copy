@@ -1,8 +1,9 @@
+import argparse
 import os
 from pathlib import Path
 import textwrap
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
@@ -10,6 +11,55 @@ from matplotlib.patches import FancyBboxPatch
 import numpy as np
 
 from alias_sampler_cirq import build_alias_sampler_circuit
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Render a grouped alias-sampler schematic."
+    )
+    parser.add_argument(
+        "--num-entries",
+        type=int,
+        default=32,
+        help="Number of alias-table entries to sample.",
+    )
+    parser.add_argument(
+        "--keep-bits",
+        type=int,
+        default=5,
+        help="Bit-width of the keep table.",
+    )
+    parser.add_argument(
+        "--alias-bits",
+        type=int,
+        default=5,
+        help="Bit-width of the alias table and output register.",
+    )
+    parser.add_argument(
+        "--threshold-bits",
+        type=int,
+        default=5,
+        help="Bit-width of the threshold register.",
+    )
+    parser.add_argument(
+        "--lambda-param",
+        type=int,
+        default=8,
+        help="SelectCopy block size parameter.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=20260710,
+        help="Seed for the deterministic sample tables.",
+    )
+    parser.add_argument(
+        "--output-path",
+        type=Path,
+        default=Path("output") / "figures" / "alias_sampler_grouped_steps.png",
+        help="Where to write the PNG schematic.",
+    )
+    return parser
 
 
 def make_alias_sampler_tables(num_entries, keep_bits, seed=0):
@@ -20,18 +70,20 @@ def make_alias_sampler_tables(num_entries, keep_bits, seed=0):
     return alias_values, keep_values
 
 
-def draw_grouped_alias_sampler_schematic(out_path="alias_sampler_grouped_steps.png"):
+def draw_grouped_alias_sampler_schematic(
+    num_entries=32,
+    keep_bits=5,
+    alias_bits=5,
+    threshold_bits=5,
+    lambda_param=8,
+    seed=20260710,
+    out_path=Path("output") / "figures" / "alias_sampler_grouped_steps.png",
+):
     """Render a grouped block schematic for one SelectCopy QROM instance."""
-    num_entries = 32
-    keep_bits = 5
-    alias_bits = 5
-    threshold_bits = 5
-    lambda_param = 8
-
     alias_values, keep_values = make_alias_sampler_tables(
         num_entries=num_entries,
         keep_bits=keep_bits,
-        seed=20260710,
+        seed=seed,
     )
     _circuit, regs = build_alias_sampler_circuit(
         alias_values,
@@ -191,11 +243,22 @@ def draw_grouped_alias_sampler_schematic(out_path="alias_sampler_grouped_steps.p
     ax.text(0.56, -0.65, "Five grouped operations: keep-load, compare, alias-load, controlled copy, measurement-based cleanup.",
             fontsize=10.5, color="#333333", ha="left", va="center")
 
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
 
 if __name__ == "__main__":
-    path = draw_grouped_alias_sampler_schematic()
+    args = build_arg_parser().parse_args()
+    path = draw_grouped_alias_sampler_schematic(
+        num_entries=args.num_entries,
+        keep_bits=args.keep_bits,
+        alias_bits=args.alias_bits,
+        threshold_bits=args.threshold_bits,
+        lambda_param=args.lambda_param,
+        seed=args.seed,
+        out_path=args.output_path,
+    )
     print(f"Wrote {path}")

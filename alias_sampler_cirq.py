@@ -1,4 +1,9 @@
+import argparse
+import os
 from pathlib import Path
+
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import cirq
 
@@ -11,6 +16,72 @@ from selectcopy import (
     verify_qrom_load,
 )
 from vandaele_comparator import build_quantum_quantum_comparator
+
+
+def _parse_csv_ints(text):
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Build and export a quantum alias-sampling circuit."
+    )
+    parser.add_argument(
+        "--alias-values",
+        help="Comma-separated alias table values. Defaults to the built-in demo table.",
+    )
+    parser.add_argument(
+        "--keep-values",
+        help="Comma-separated keep table values. Defaults to the built-in demo table.",
+    )
+    parser.add_argument(
+        "--keep-bits",
+        type=int,
+        default=None,
+        help="Bit-width for keep values when you want to override inference.",
+    )
+    parser.add_argument(
+        "--threshold-bits",
+        type=int,
+        default=None,
+        help="Bit-width for the threshold register.",
+    )
+    parser.add_argument(
+        "--alias-bits",
+        type=int,
+        default=None,
+        help="Bit-width for the alias/output registers.",
+    )
+    parser.add_argument(
+        "--lambda-param",
+        type=int,
+        default=None,
+        help="SelectCopy block size parameter.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output") / "alias_sampler",
+        help="Directory for the generated QASM file.",
+    )
+    parser.add_argument(
+        "--clean-intermediates",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reuse scratch qubits by uncomputing intermediate stages.",
+    )
+    parser.add_argument(
+        "--measurement-uncompute",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the measurement-based uncompute path for the QROMs.",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Run a small basis-state verification before exporting QASM.",
+    )
+    return parser
 
 
 def int_to_bits(value, width):
@@ -419,11 +490,29 @@ def verify_alias_sampler(
 
 
 if __name__ == "__main__":
-    # Example alias table data. Replace these lists with your own tables.
-    alias_values = [1, 0, 3, 2]
-    keep_values = [2, 1, 3, 1]
+    args = build_arg_parser().parse_args()
+    if args.alias_values is None and args.keep_values is None:
+        alias_values = [1, 0, 3, 2]
+        keep_values = [2, 1, 3, 1]
+    elif args.alias_values is not None and args.keep_values is not None:
+        alias_values = _parse_csv_ints(args.alias_values)
+        keep_values = _parse_csv_ints(args.keep_values)
+    else:
+        raise SystemExit("Provide both --alias-values and --keep-values, or neither.")
 
-    circuit, regs = build_alias_sampler_circuit(alias_values, keep_values)
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    circuit, regs = build_alias_sampler_circuit(
+        alias_values,
+        keep_values,
+        keep_bits=args.keep_bits,
+        threshold_bits=args.threshold_bits,
+        alias_bits=args.alias_bits,
+        lambda_param=args.lambda_param,
+        clean_intermediates=args.clean_intermediates,
+        use_measurement_uncompute=args.measurement_uncompute,
+    )
 
     print("=== Quantum Alias Sampler ===")
     print(f"Entries: {len(alias_values)}")
@@ -433,9 +522,22 @@ if __name__ == "__main__":
     print(f"Alias bits: {len(regs['alias_reg'])}")
     metrics = regs["gate_metrics"]
     print(format_compact_resource_report(metrics))
-    print("Verification: skipped in default run.")
+    if args.verify:
+        verify_alias_sampler(
+            alias_values,
+            keep_values,
+            keep_bits=args.keep_bits,
+            threshold_bits=args.threshold_bits,
+            alias_bits=args.alias_bits,
+            lambda_param=args.lambda_param,
+            clean_intermediates=args.clean_intermediates,
+            use_measurement_uncompute=args.measurement_uncompute,
+        )
+        print("Verification: passed on small basis-state cases.")
+    else:
+        print("Verification: skipped (use --verify to enable).")
 
-    qasm_path = Path(f"alias_sampler_n{len(alias_values)}.qasm")
+    qasm_path = output_dir / f"alias_sampler_n{len(alias_values)}.qasm"
     qasm_str = cirq.qasm(circuit, args=cirq.QasmArgs(version="3.0"))
     qasm_path.write_text(qasm_str, encoding="utf-8")
     print(f"QASM written to {qasm_path}")
