@@ -1,12 +1,19 @@
 import unittest
 
+import cirq
+
 from alias_sampler_cirq import (
     build_alias_sampler_circuit,
     verify_alias_qrom_load,
     verify_alias_sampler,
     verify_keep_qrom_load,
 )
-from selectcopy import format_compact_resource_report, format_resource_report
+from selectcopy import (
+    analyze_clifford_t_metrics,
+    count_clifford_t_explicit_t_gates,
+    format_compact_resource_report,
+    format_resource_report,
+)
 from vandaele_comparator import verify_small_instances
 
 
@@ -178,6 +185,12 @@ class QuantumComponentTests(unittest.TestCase):
             f"explicit_toffoli={regs['gate_metrics']['explicit_toffoli_count']}  "
             f"classical_toffoli={regs['gate_metrics']['classically_controlled_toffoli_equiv_count']}",
         )
+
+    def test_clifford_t_toffoli_decomposition_counts_seven_t_gates(self):
+        circuit = cirq.Circuit(cirq.CCX(*cirq.LineQubit.range(3)))
+        self.assertEqual(count_clifford_t_explicit_t_gates(circuit), 7)
+        metrics = analyze_clifford_t_metrics(circuit)
+        self.assertEqual(metrics["explicit_t_count"], 7)
 
 
 if __name__ == "__main__":

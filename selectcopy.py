@@ -9,11 +9,6 @@ Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 import cirq
 import numpy as np
 
-from qualtran.bloqs.data_loading.select_swap_qrom import SelectSwapQROM
-from qualtran.bloqs.swap_network.cswap_approx import CSwapApprox
-from qualtran.bloqs.mcmt.and_bloq import And
-from qualtran.cirq_interop._bloq_to_cirq import BloqAsCirqGate
- 
 def controlled_on_val(qubits, val):
     """Utility to return X gates handling 0-controls for a specific value."""
     gates = []
@@ -66,113 +61,44 @@ def _is_toffoli_like_gate(gate):
     return isinstance(gate, cirq.CCXPowGate)
 
 
-def _replace_qualtran_wrappers(circuit):
-    """Replace a small set of Qualtran wrappers with native Cirq gates."""
-    replacements = {
-        "X": cirq.X,
-        "XGate": cirq.X,
-        "CNOT": cirq.CNOT,
-    }
-    simplified = cirq.Circuit()
-    for op in circuit.all_operations():
-        gate = getattr(op, "gate", None)
-        if isinstance(gate, BloqAsCirqGate):
-            bloq_obj = getattr(gate, "bloq", None)
-            bloq_name = getattr(getattr(bloq_obj, "__class__", None), "__name__", "")
-            if bloq_name in replacements:
-                simplified.append(replacements[bloq_name].on(*op.qubits))
-                continue
-            bloq_str = str(bloq_obj)
-            if bloq_str in replacements:
-                simplified.append(replacements[bloq_str].on(*op.qubits))
-                continue
-        simplified.append(op)
-    return simplified
-
-
-def _toffoli_native_decompose_op(op):
-    """Recursively decompose an op while keeping literal Toffoli gates."""
-    gate = getattr(op, "gate", None)
-
+def _toffoli_equivalent_count_for_gate(gate):
+    """Return a Toffoli-equivalent count for explicit controlled-X gates."""
     if isinstance(gate, cirq.CCXPowGate):
-        return [op]
-
-    if isinstance(gate, CSwapApprox):
-        ctrl = op.qubits[0]
-        bitsize = gate.bitsize
-        x_bits = op.qubits[1 : 1 + bitsize]
-        y_bits = op.qubits[1 + bitsize : 1 + 2 * bitsize]
-        if len(x_bits) != bitsize or len(y_bits) != bitsize:
-            raise ValueError("Malformed CSwapApprox operation.")
-        toffoli_native = []
-        for x, y in zip(x_bits, y_bits):
-            toffoli_native.append(cirq.CNOT(x, y))
-            toffoli_native.append(cirq.TOFFOLI(ctrl, y, x))
-            toffoli_native.append(cirq.CNOT(x, y))
-        return toffoli_native
-
-    if isinstance(gate, And):
-        ctrl = op.qubits[:2]
-        target = op.qubits[2]
-        pre_post_ops = [cirq.X(q) for (q, v) in zip(ctrl, [gate.cv1, gate.cv2]) if v == 0]
-        if gate.uncompute:
-            return [
-                *pre_post_ops,
-                cirq.H(target),
-                cirq.measure(target, key=str(target)),
-                cirq.CZ(*ctrl).with_classical_controls(str(target)),
-                cirq.reset(target),
-                *reversed(pre_post_ops),
-            ]
-        return [
-            *pre_post_ops,
-            cirq.CCX(ctrl[0], ctrl[1], target),
-            *reversed(pre_post_ops),
-        ]
-
-    if isinstance(gate, BloqAsCirqGate):
-        bloq_obj = getattr(gate, "bloq", None)
-        bloq_name = getattr(getattr(bloq_obj, "__class__", None), "__name__", "")
-        if bloq_name in {"X", "XGate"}:
-            return [cirq.X.on(*op.qubits)]
-        if bloq_name in {"CNOT", "CNOTGate", "CX"}:
-            return [cirq.CNOT.on(*op.qubits)]
-        if bloq_name.startswith("Xor"):
-            pieces = cirq.decompose_once(op)
-            if pieces is not None:
-                flat = []
-                for piece in cirq.flatten_to_ops(pieces):
-                    flat.extend(_toffoli_native_decompose_op(piece))
-                return flat
-
-    try:
-        pieces = cirq.decompose_once(op)
-    except Exception:
-        return [op]
-    if pieces is None:
-        return [op]
-
-    flat = []
-    for piece in cirq.flatten_to_ops(pieces):
-        flat.extend(_toffoli_native_decompose_op(piece))
-    return flat
-
-
-def _toffoli_native_expand_circuit(circuit):
-    """Expand a circuit to a Toffoli-native form without decomposing CCX."""
-    expanded = cirq.Circuit()
-    for op in circuit.all_operations():
-        expanded.append(_toffoli_native_decompose_op(op))
-    return expanded
+        return 1
+    if isinstance(gate, cirq.ControlledGate) and gate.sub_gate == cirq.X:
+        controls = gate.num_controls()
+        if controls >= 2:
+            return controls - 1
+    return 0
 
 
 def count_toffolis(circuit):
-    """Count explicit Toffoli-like gates in a Cirq circuit."""
+    """Count explicit Toffoli-equivalent controlled-X work in a Cirq circuit."""
     return sum(
-        1
+        _toffoli_equivalent_count_for_gate(getattr(op, "gate", None))
         for op in circuit.all_operations()
-        if _is_toffoli_like_gate(getattr(op, "gate", None))
     )
+
+
+def _is_t_gate(gate):
+    """Return True for literal T or T^-1 gates."""
+    return gate == cirq.T or gate == cirq.T**-1
+
+
+def count_t_gates(circuit):
+    """Count explicit T gates in a Cirq circuit."""
+    return sum(1 for op in circuit.all_operations() if _is_t_gate(getattr(op, "gate", None)))
+
+
+def decompose_to_clifford_t_circuit(circuit):
+    """Decompose a circuit while preserving non-unitary operations."""
+    return cirq.Circuit(cirq.decompose(circuit))
+
+
+def count_clifford_t_explicit_t_gates(circuit):
+    """Count explicit T gates after Clifford+T decomposition."""
+    decomposed = decompose_to_clifford_t_circuit(circuit)
+    return count_t_gates(decomposed)
 
 
 def count_classically_controlled_toffoli_equivalents(circuit):
@@ -180,8 +106,8 @@ def count_classically_controlled_toffoli_equivalents(circuit):
     total = 0
     for op in circuit.all_operations():
         sub_op, is_classically_controlled = _unwrap_classically_controlled_operation(op)
-        if is_classically_controlled and _is_toffoli_like_gate(getattr(sub_op, "gate", None)):
-            total += 1
+        if is_classically_controlled:
+            total += _toffoli_equivalent_count_for_gate(getattr(sub_op, "gate", None))
     return total
 
 def analyze_gate_metrics(circuit):
@@ -197,6 +123,17 @@ def analyze_gate_metrics(circuit):
         "classically_controlled_toffoli_equiv_count": classical_toffoli_equivalents,
         "literal_toffoli_count": literal_toffolis,
         "toffoli_count": literal_toffolis,
+    }
+
+
+def analyze_clifford_t_metrics(circuit):
+    """Return a Clifford+T comparison count for the same logical circuit."""
+    decomposed = decompose_to_clifford_t_circuit(circuit)
+    explicit_t_count = count_t_gates(decomposed)
+    return {
+        "decomposed_gate_count": count_operations(decomposed),
+        "explicit_t_count": explicit_t_count,
+        "t_count": explicit_t_count,
     }
 
 
@@ -286,6 +223,56 @@ def address_phase_oracle_ops(q_reg, address, phase_work):
     """Backward-compatible alias for the size-1 QROM phase oracle helper."""
     return size_one_qrom_phase_oracle_ops(q_reg, address, phase_work)
 
+
+def unary_flag_work_size(num_bits):
+    """Number of clean work qubits needed for all unary flags of a bit register."""
+    if num_bits <= 1:
+        return 0
+    return (1 << (num_bits + 1)) - 2
+
+
+def append_unary_flag_compute(circuit, q_reg, flag_work):
+    """Compute one-hot flags for q_reg and return (leaf_flags, compute_ops)."""
+    n = len(q_reg)
+    if n <= 1:
+        return [], []
+    required = unary_flag_work_size(n)
+    if len(flag_work) < required:
+        raise ValueError("flag_work does not have enough ancillas.")
+
+    compute_ops = []
+
+    def add(op):
+        compute_ops.append(op)
+        circuit.append(op)
+
+    # First level: flags for q_0 == 0 and q_0 == 1 use Clifford gates only.
+    add(cirq.X(flag_work[0]))
+    add(cirq.CNOT(q_reg[0], flag_work[0]))
+    add(cirq.CNOT(q_reg[0], flag_work[1]))
+    level = [flag_work[0], flag_work[1]]
+    next_idx = 2
+
+    for bit in q_reg[1:]:
+        next_level = []
+        for parent in level:
+            zero_child = flag_work[next_idx]
+            one_child = flag_work[next_idx + 1]
+            next_idx += 2
+            add(cirq.CCX(parent, bit, one_child))
+            add(cirq.X(bit))
+            add(cirq.CCX(parent, bit, zero_child))
+            add(cirq.X(bit))
+            next_level.extend([zero_child, one_child])
+        level = next_level
+
+    return level, compute_ops
+
+
+def append_unary_flag_uncompute(circuit, compute_ops):
+    """Uncompute flags generated by append_unary_flag_compute."""
+    circuit.append(cirq.inverse(cirq.Circuit(compute_ops)))
+
 def append_measurement_based_uncompute(
     circuit,
     q_reg,
@@ -320,23 +307,45 @@ def append_measurement_based_uncompute(
     if not q_reg:
         return
 
-    for meas_key, r, i in measured_terms:
-        for q_val in range(2**n_q):
-            addr = q_val * lambda_param
-            if addr >= N:
-                continue
+    if len(q_reg) == 1:
+        q_flags = []
+        compute_ops = []
+    else:
+        q_flags, compute_ops = append_unary_flag_compute(circuit, q_reg, phase_work)
 
-            f_q_0 = data[addr]
+    for q_val in range(2**n_q):
+        addr = q_val * lambda_param
+        if addr >= N:
+            continue
+
+        f_q_0 = data[addr]
+        corrections = []
+        for meas_key, r, i in measured_terms:
             idx = addr + r
             if idx >= N:
                 continue
-
             f_q_r = data[idx]
-            if f_q_r[i] ^ f_q_0[i] != 1:
-                continue
+            if f_q_r[i] ^ f_q_0[i] == 1:
+                corrections.append(meas_key)
 
-            for op in size_one_qrom_phase_oracle_ops(q_reg, q_val, phase_work):
-                append_new(op.with_classical_controls(meas_key))
+        if not corrections:
+            continue
+
+        if len(q_reg) == 1:
+            pad = controlled_on_val(q_reg, q_val)
+            append_new(pad)
+            match_qubit = q_reg[0]
+        else:
+            match_qubit = q_flags[q_val]
+
+        for meas_key in corrections:
+            append_new(cirq.Z(match_qubit).with_classical_controls(meas_key))
+
+        if len(q_reg) == 1:
+            append_new(pad)
+
+    if len(q_reg) > 1:
+        append_unary_flag_uncompute(circuit, compute_ops)
 
 def verify_qrom_load(table, lambda_param=None, sample_addresses=None):
     """
@@ -407,18 +416,22 @@ def build_select_copy_qrom(
     Args:
         data: List of lists/arrays, where data[x] is the b-bit string.
         lambda_param: The tuning parameter defining block sizing.
-        use_measurement_uncompute: If True, use an actual measurement-based
-            uncompute path for the dirty lookup outputs.
-        use_reverse_uncompute: If True, append the literal inverse lookup.
-            This is only needed when exporting a fully unitary circuit.
+        use_measurement_uncompute: If True, measure and reset the auxiliary
+            block-difference outputs and apply the corresponding address-phase
+            fixups.
+        use_reverse_uncompute: If True, coherently clear the auxiliary
+            block-difference outputs by replaying the outer-address loads on
+            those outputs only. This leaves the looked-up target value in place.
     """
     N = len(data)
     if N == 0:
         raise ValueError("data must not be empty.")
     if isinstance(data[0], int):
         b = max(1, max(int(v) for v in data).bit_length())
+        data_bits = [int_to_bits(int(v), b) for v in data]
     else:
         b = len(data[0])
+        data_bits = [[int(bit) for bit in row] for row in data]
     if lambda_param < 1:
         raise ValueError("lambda_param must be at least 1.")
     if lambda_param & (lambda_param - 1) != 0:
@@ -431,30 +444,34 @@ def build_select_copy_qrom(
     selection_bits = n_q + n_r
     addr_bits = max(1, selection_bits)
 
-    def row_to_int(row):
-        if isinstance(row, int):
-            return int(row)
-        return sum((int(bit) & 1) << i for i, bit in enumerate(row))
-
-    data_as_ints = [row_to_int(row) for row in data]
     padded_len = 1 << addr_bits
-    if len(data_as_ints) < padded_len:
-        data_as_ints = data_as_ints + [0] * (padded_len - len(data_as_ints))
-    elif len(data_as_ints) > padded_len:
+    if len(data_bits) < padded_len:
+        data_bits = data_bits + [[0] * b for _ in range(padded_len - len(data_bits))]
+    elif len(data_bits) > padded_len:
         raise ValueError("data is too large for the derived address register width.")
 
     q_reg = [cirq.NamedQubit(f"q_{i}") for i in range(n_q)]
     r_reg = [cirq.NamedQubit(f"r_{i}") for i in range(n_r)]
     target_reg = [cirq.NamedQubit(f"t_{i}") for i in range(b)]
-    dirty_pad = max(0, lambda_param - 1) * b
+    dirty_blocks = [
+        [cirq.NamedQubit(f"dirty_{(r - 1) * b + i}") for i in range(b)]
+        for r in range(1, lambda_param)
+    ]
+    phase_work = [
+        cirq.NamedQubit(f"dirty_phase_{i}") for i in range(unary_flag_work_size(n_q))
+    ]
+    r_flag_work = [
+        cirq.NamedQubit(f"dirty_rflag_{i}") for i in range(unary_flag_work_size(n_r))
+    ]
+    dirty_pad = max(0, lambda_param - 1) * b + len(phase_work) + len(r_flag_work)
 
     if n_q == 0:
         circuit = cirq.Circuit()
-        for addr, value in enumerate(data_as_ints[:N]):
+        for addr, bits in enumerate(data_bits[:N]):
             pad = controlled_on_val(r_reg, addr)
             circuit.append(pad)
             for bit in range(b):
-                if (value >> bit) & 1:
+                if bits[bit]:
                     circuit.append(cirq.X(target_reg[bit]).controlled_by(*r_reg))
             circuit.append(pad)
         for qubit in q_reg + r_reg + target_reg:
@@ -463,25 +480,92 @@ def build_select_copy_qrom(
             circuit.append(cirq.I(cirq.NamedQubit(f"dirty_{i}")))
         return circuit
 
-    block_log = int(np.log2(lambda_param))
-    qrom = SelectSwapQROM.build_from_bitsize(
-        padded_len,
-        (b,),
-        log_block_sizes=(block_log,),
-        use_dirty_ancilla=True,
-    ).with_data(np.asarray(data_as_ints, dtype=int))
-    qrom_cbloq = qrom.decompose_bloq()
-    circuit, _out_quregs = qrom_cbloq.to_cirq_circuit_and_quregs(
-        selection=np.asarray(q_reg + r_reg, dtype=object),
-        target0_=np.asarray(target_reg[::-1], dtype=object),
-        qubit_manager=cirq.GreedyQubitManager(prefix="dirty", maximize_reuse=True),
-    )
-    circuit = _replace_qualtran_wrappers(circuit)
-    circuit = _toffoli_native_expand_circuit(circuit)
+    def append_qrom_outer_load(circuit, include_target=True, include_dirty=True):
+        """Load block baselines and within-block differences controlled by q."""
+        if n_q == 1:
+            q_flags = []
+            compute_ops = []
+        else:
+            q_flags, compute_ops = append_unary_flag_compute(circuit, q_reg, phase_work)
+
+        for q_val in range(2**n_q):
+            base_idx = q_val * lambda_param
+            base = data_bits[base_idx]
+
+            if n_q == 1:
+                pad_q = controlled_on_val(q_reg, q_val)
+                circuit.append(pad_q)
+                q_control = q_reg[0]
+            else:
+                pad_q = []
+                q_control = q_flags[q_val]
+
+            if include_target:
+                for bit in range(b):
+                    if base[bit]:
+                        circuit.append(cirq.CNOT(q_control, target_reg[bit]))
+
+            if include_dirty:
+                for r in range(1, lambda_param):
+                    row = data_bits[base_idx + r]
+                    for bit in range(b):
+                        if row[bit] ^ base[bit]:
+                            circuit.append(cirq.CNOT(q_control, dirty_blocks[r - 1][bit]))
+
+            circuit.append(pad_q)
+
+        if n_q > 1:
+            append_unary_flag_uncompute(circuit, compute_ops)
+
+    def append_select_copy(circuit):
+        """Copy the selected within-block difference into the target."""
+        if n_r == 1:
+            r_flags = []
+            compute_ops = []
+        else:
+            r_flags, compute_ops = append_unary_flag_compute(circuit, r_reg, r_flag_work)
+
+        for r in range(1, lambda_param):
+            if n_r == 1:
+                pad_r = controlled_on_val(r_reg, r)
+                circuit.append(pad_r)
+                r_control = r_reg[0]
+            else:
+                pad_r = []
+                r_control = r_flags[r]
+            for bit in range(b):
+                circuit.append(cirq.CCX(r_control, dirty_blocks[r - 1][bit], target_reg[bit]))
+            circuit.append(pad_r)
+
+        if n_r > 1:
+            append_unary_flag_uncompute(circuit, compute_ops)
+
+    circuit = cirq.Circuit()
+    append_qrom_outer_load(circuit, include_target=True, include_dirty=True)
+    append_select_copy(circuit)
+
+    if use_measurement_uncompute:
+        append_measurement_based_uncompute(
+            circuit,
+            q_reg=q_reg,
+            dirty_ancillas=dirty_blocks,
+            data=data_bits,
+            lambda_param=lambda_param,
+            phase_work=phase_work,
+            measurement_key_prefix=measurement_key_prefix,
+        )
+    elif use_reverse_uncompute:
+        append_qrom_outer_load(circuit, include_target=False, include_dirty=True)
+
     for qubit in q_reg + r_reg + target_reg:
         circuit.append(cirq.I(qubit))
-    for i in range(dirty_pad):
-        circuit.append(cirq.I(cirq.NamedQubit(f"dirty_{i}")))
+    for block in dirty_blocks:
+        for qubit in block:
+            circuit.append(cirq.I(qubit))
+    for qubit in phase_work:
+        circuit.append(cirq.I(qubit))
+    for qubit in r_flag_work:
+        circuit.append(cirq.I(qubit))
 
     return circuit
 
@@ -490,12 +574,25 @@ def build_exportable_select_copy_qrom(data, lambda_param):
     return build_select_copy_qrom(data, lambda_param=lambda_param)
 
 def choose_lambda(num_entries):
-    """Pick a power-of-two block size near sqrt(N) for scalable QROMs."""
+    """Pick a power-of-two block size for the measurement-cleaned SelectCopy QROM."""
     if num_entries < 2:
         raise ValueError("num_entries must be at least 2.")
-    target = max(2, int(np.sqrt(num_entries)))
-    lambda_bits = max(1, target.bit_length() - 1)
-    return min(num_entries, 1 << lambda_bits)
+    addr_bits = max(1, (num_entries - 1).bit_length())
+    candidates = [1 << k for k in range(1, addr_bits + 1) if (1 << k) <= num_entries]
+    if not candidates:
+        return num_entries
+
+    def proxy_cost(lam):
+        q_blocks = max(1, num_entries // lam)
+        q_bits = max(1, (q_blocks - 1).bit_length())
+        r_bits = max(1, (lam - 1).bit_length())
+        outer = q_blocks
+        inner = lam
+        copy = lam * addr_bits
+        flag_overhead = q_bits * q_blocks + r_bits * lam
+        return outer + inner + copy + flag_overhead
+
+    return min(candidates, key=proxy_cost)
 
 
 def run_stamp():

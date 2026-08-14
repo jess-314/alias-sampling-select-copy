@@ -11,7 +11,13 @@ import cirq
 import numpy as np
 
 from alias_sampler_cirq import build_alias_sampler_circuit
-from selectcopy import format_compact_resource_report, loglog_slope
+from selectcopy import (
+    analyze_clifford_t_metrics,
+    format_compact_resource_report,
+    loglog_slope,
+)
+
+T_PER_TOFFOLI = 4
 
 
 def _parse_csv_ints(text):
@@ -66,6 +72,11 @@ def choose_alias_sampler_widths(num_entries, keep_bits, alias_gap=2):
 def run_stamp():
     """Return a compact timestamp suitable for run-unique filenames."""
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def toffoli_to_t_count(toffoli_count):
+    """Convert a Toffoli count to the repo's default T-equivalent count."""
+    return T_PER_TOFFOLI * toffoli_count
 
 
 def make_run_output_dir(root, stamp):
@@ -127,6 +138,8 @@ def print_console_summary(results):
     for group_key, metric_key, label in [
         ("gate_metrics", "total_gate_count", "Total gates"),
         ("gate_metrics", "toffoli_count", "Toffolis"),
+        ("derived_metrics", "t_count", "T-equivalent gates (4 per Toffoli)"),
+        ("clifford_t_metrics", "explicit_t_count", "Explicit Clifford+T T gates"),
         ("dirty_budget", "total_dirty_ancillas", "Dirty ancillas"),
     ]:
         slopes = summarize_keep_bit_slopes(results, group_key, metric_key)
@@ -168,6 +181,10 @@ def sweep_full_alias_sampler_scaling(num_entries_list, keep_bits_list, seed=0):
                 "qrom_lambda": regs["qrom_lambda"],
                 "register_widths": regs["register_widths"],
                 "gate_metrics": regs["gate_metrics"],
+                "derived_metrics": {
+                    "t_count": toffoli_to_t_count(regs["gate_metrics"]["toffoli_count"]),
+                },
+                "clifford_t_metrics": analyze_clifford_t_metrics(circuit),
                 "dirty_budget": regs["dirty_budget"],
                 "moment_count": len(circuit),
                 "circuit": circuit,
@@ -205,7 +222,11 @@ def export_qasm_files(results, out_dir, stamp):
 
 
 def plot_full_alias_sampler_scaling(results, out_path=None):
-    """Plot total gates, Toffoli count, and dirty-ancilla budget."""
+    """Plot total gates, Toffoli count, and dirty-ancilla budget.
+
+    The T-count panel compares the 4-T-per-Toffoli estimate against an explicit
+    Clifford+T decomposition of the same circuit.
+    """
     try:
         import matplotlib.pyplot as plt
     except ImportError as exc:
@@ -233,17 +254,54 @@ def plot_full_alias_sampler_scaling(results, out_path=None):
         return True
 
     keep_bit_values = sorted({row["keep_bits"] for row in results})
-    metric_keys = [
-        ("gate_metrics", "total_gate_count", "Total gates", "Count"),
-        ("gate_metrics", "toffoli_count", "Toffolis", "Count"),
-        ("dirty_budget", "total_dirty_ancillas", "Dirty ancillas", "Qubits"),
+    palette = plt.rcParams.get("axes.prop_cycle", None)
+    palette = palette.by_key().get("color", []) if palette is not None else []
+    if not palette:
+        palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+
+    metric_panels = [
+        {
+            "title": "Total gates",
+            "ylabel": "Count",
+            "series": [("gate_metrics", "total_gate_count", "keep_bits={keep_bits}, slope={slope:.2f}", "o", "-")],
+        },
+        {
+            "title": "Toffolis",
+            "ylabel": "Count",
+            "series": [("gate_metrics", "toffoli_count", "keep_bits={keep_bits}, slope={slope:.2f}", "o", "-")],
+        },
+        {
+            "title": "T count comparison\n4T estimate vs explicit Clifford+T",
+            "ylabel": "Count",
+            "series": [
+                (
+                    "derived_metrics",
+                    "t_count",
+                    "keep_bits={keep_bits}, 4T estimate, slope={slope:.2f}",
+                    "o",
+                    "--",
+                ),
+                (
+                    "clifford_t_metrics",
+                    "explicit_t_count",
+                    "keep_bits={keep_bits}, explicit Clifford+T, slope={slope:.2f}",
+                    "s",
+                    "-",
+                ),
+            ],
+        },
+        {
+            "title": "Dirty ancillas",
+            "ylabel": "Qubits",
+            "series": [("dirty_budget", "total_dirty_ancillas", "keep_bits={keep_bits}, slope={slope:.2f}", "o", "-")],
+        },
     ]
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.5), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=(18, 11), constrained_layout=True)
     axes = axes.ravel()
 
     register_summary = None
-    for ax, (group_key, metric_key, title, ylabel) in zip(axes, metric_keys):
+    for ax, panel in zip(axes, metric_panels):
         plotted_any = False
         register_widths = {
             "address": [],
@@ -259,16 +317,28 @@ def plot_full_alias_sampler_scaling(results, out_path=None):
                 [row for row in results if row["keep_bits"] == keep_bits],
                 key=lambda row: row["N"],
             )
-            sizes = [row["N"] for row in rows]
-            values = [row[group_key][metric_key] for row in rows]
-            slope = loglog_slope(sizes, values)
-            plotted_any |= plot_positive_log_series(
-                ax,
-                rows,
-                group_key,
-                metric_key,
-                f"keep_bits={keep_bits}, slope={slope:.2f}",
-            )
+            color = palette[(keep_bits - keep_bit_values[0]) % len(palette)]
+            for group_key, metric_key, label_template, marker, linestyle in panel["series"]:
+                sizes = [row["N"] for row in rows]
+                values = [row[group_key][metric_key] for row in rows]
+                slope = loglog_slope(sizes, values)
+                label = label_template.format(keep_bits=keep_bits, slope=slope)
+                positive_rows = [
+                    row
+                    for row in rows
+                    if row[group_key][metric_key] > 0 and row["N"] > 0
+                ]
+                if positive_rows:
+                    plotted_any = True
+                    ax.loglog(
+                        [row["N"] for row in positive_rows],
+                        [row[group_key][metric_key] for row in positive_rows],
+                        marker=marker,
+                        linestyle=linestyle,
+                        linewidth=2,
+                        color=color,
+                        label=label,
+                    )
             for row in rows:
                 reg = row["register_widths"]
                 for key in register_widths:
@@ -279,15 +349,23 @@ def plot_full_alias_sampler_scaling(results, out_path=None):
                 [row for row in results if row["keep_bits"] == keep_bits],
                 key=lambda row: row["N"],
             )
-            slope = loglog_slope(
-                [row["N"] for row in rows],
-                [row[group_key][metric_key] for row in rows],
-            )
-            slope_summary_parts.append(f"k{keep_bits}={slope:.2f}")
+            for group_key, metric_key, _label_template, _marker, _linestyle in panel["series"]:
+                slope = loglog_slope(
+                    [row["N"] for row in rows],
+                    [row[group_key][metric_key] for row in rows],
+                )
+                if len(panel["series"]) == 1:
+                    slope_summary_parts.append(f"k{keep_bits}={slope:.2f}")
+                else:
+                    path_label = "est" if metric_key == "t_count" else "explicit"
+                    slope_summary_parts.append(f"k{keep_bits} {path_label}={slope:.2f}")
         slope_summary = ", ".join(slope_summary_parts)
-        ax.set_title(f"{title}\nslopes: {slope_summary}")
+        if len(panel["series"]) > 1:
+            ax.set_title(f"{panel['title']}\nslopes: {slope_summary}")
+        else:
+            ax.set_title(f"{panel['title']}\nslopes: {slope_summary}")
         ax.set_xlabel("Database size N")
-        ax.set_ylabel(ylabel)
+        ax.set_ylabel(panel["ylabel"])
         if plotted_any:
             ax.grid(True, which="both", linestyle="--", alpha=0.35)
         else:
@@ -304,6 +382,7 @@ def plot_full_alias_sampler_scaling(results, out_path=None):
             ax.set_yticks([])
 
     axes[0].legend(fontsize=8, title="Keep bits")
+    axes[2].legend(fontsize=7, title="Keep bits / path")
     register_summary = (
         f"addr={format_range(register_widths['address'])} bits, "
         f"threshold={format_range(register_widths['threshold'])} bits, "
@@ -359,11 +438,13 @@ if __name__ == "__main__":
             print("\n--- Per-instance resource summary ---")
             for row in results:
                 metrics = row["gate_metrics"]
+                explicit_t = row["clifford_t_metrics"]["explicit_t_count"]
                 print(
                     f"N={row['N']:>3}  keep_bits={row['keep_bits']:>2}  "
                     f"alias_bits={row['alias_bits']:>2}  "
                     f"lambda={row['qrom_lambda']:>2}  "
                     + format_compact_resource_report(metrics)
+                    + f"  explicit_t={explicit_t}"
                 )
 
             qasm_paths = export_qasm_files(results, output_dir, stamp)
